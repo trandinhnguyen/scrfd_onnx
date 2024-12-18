@@ -1,7 +1,10 @@
+import time
 import numpy as np
 from onnxruntime import InferenceSession
 from PIL import Image
 from PIL.Image import Image as PILImage
+
+from utils import nms, draw
 
 
 def normalize(
@@ -74,42 +77,6 @@ def distance2kps(
     return np.stack(preds, axis=-1).reshape(distance.shape[0], -1, 2)
 
 
-def nms(boxes: np.ndarray, order: np.ndarray, nms_thresh: float) -> list:
-    """Perform non-maximum suppression on bounding boxes
-
-    Args:
-        - boxes: bounding boxes have shape (:, 4)
-        - order: sorted indices
-        - nms_threshold: iou threshold
-    Returns:
-        - list of indices"""
-    x1 = boxes[:, 0]
-    y1 = boxes[:, 1]
-    x2 = boxes[:, 2]
-    y2 = boxes[:, 3]
-    areas = (x2 - x1) * (y2 - y1)
-
-    keep = []
-    while order.size > 0:
-        i = order[0]
-        keep.append(i)  # always keep the first element
-
-        # Compute ious
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
-
-        w = np.maximum(0.0, xx2 - xx1)
-        h = np.maximum(0.0, yy2 - yy1)
-        intersection = w * h
-        iou = intersection / (areas[i] + areas[order[1:]] - intersection)
-
-        inds = np.where(iou <= nms_thresh)[0]  # get rid of boxes whose iou is large
-        order = order[inds + 1]  # increase indices by 1 to eliminate current box
-    return keep
-
-
 class SCRFD:
     def __init__(self, model_path):
         """Define some model configurations and initialize child objects."""
@@ -126,9 +93,7 @@ class SCRFD:
         self._load_model(model_path)
 
     def _load_model(self, model_path):
-        self.session = InferenceSession(
-            model_path, providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
-        )
+        self.session = InferenceSession(model_path)
         outputs = self.session.get_outputs()
         self.output_names = [out.name for out in outputs]
 
@@ -192,7 +157,9 @@ class SCRFD:
         image = np.expand_dims(image, axis=0)
 
         # Inference
+        start = time.time()
         net_outs = self.session.run(self.output_names, {self.input_name: image})
+        print("Forwarding time:", time.time() - start)
 
         # Loop through feature level in feature pyramid
         for idx, stride in enumerate(self.feat_stride_fpn):
@@ -215,7 +182,8 @@ class SCRFD:
 
     def detect(
         self,
-        image: PILImage,
+        image_path: str,
+        resized_sizes: list[int] = [640, 640],
         threshold: float | None = 0.4,
         iou_threshold: float | None = 0.5,
         max_faces: int | None = None,
@@ -231,7 +199,7 @@ class SCRFD:
         5. (Optional) Limit return predictions
 
         Args:
-            - image: PIL Image
+            - image: Path to image.
             - threshold: probability threshold
             - iou_threshold: If two boxes have iou larger than this value, one
             will be get rid of
@@ -241,13 +209,13 @@ class SCRFD:
             - boxes (:, 4), keypoints (:, 5, 2), scores: (:, 1)
         """
         # Resize image without losing aspect ratio and convert to ndarray.
-        image = image if image.mode == "RGB" else image.convert("RGB")
+        image = Image.open(image_path).convert("RGB")
         aspect_ratio = image.height / image.width
         if aspect_ratio > 1.0:
-            new_height = self.input_shape[0]
+            new_height = resized_sizes[0]
             new_width = int(new_height / aspect_ratio)
         else:
-            new_width = self.input_shape[1]
+            new_width = resized_sizes[1]
             new_height = int(new_width * aspect_ratio)
 
         resized_img = image.resize((new_width, new_height), resample=Image.NEAREST)
@@ -287,3 +255,11 @@ class SCRFD:
             kpss = kpss[:max_faces]
 
         return bboxes, kpss, scores
+
+
+if __name__ == "__main__":
+    image_path = "images/worlds_largest_selfie_image.jpg"
+
+    face_detector = SCRFD("./models/scrfd.onnx")
+    boxes, kpss, scores = face_detector.detect(image_path, [320, 320], 0.3, 0.4)
+    draw(image_path, boxes, kpss)
