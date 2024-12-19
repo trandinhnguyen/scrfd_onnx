@@ -70,7 +70,7 @@ class PeopleNet:
         scaling_factor = new_h / h
         centers = self.anchors - boxes[:, :2]
         wh = self.anchors + boxes[:, 2:]
-        boxes = np.hstack([centers, wh]) * self.box_norm / scaling_factor
+        boxes = np.hstack([centers, wh]) * self.box_norm
 
         ids = np.where(scores > conf_thres)[0]
         scores = scores[ids]
@@ -80,6 +80,7 @@ class PeopleNet:
         keep = nms(boxes, order[:, 0], nms_thres)
         scores = scores[keep]
         boxes = boxes[keep]
+        boxes /= scaling_factor
 
         return np.hstack([scores, boxes])
 
@@ -87,8 +88,8 @@ class PeopleNet:
 if __name__ == "__main__":
     from utils import draw
 
-    image_path = "images/worlds_largest_selfie_image.jpg"
+    image_path = "images/solvay_conference_1927.jpg"
     model = PeopleNet()
-    dets = model.detect(image_path, 0.2)
+    dets = model.detect(image_path, 0.4)
     print("Num detects:", dets.shape[0])
     draw(image_path, dets[:, 1:])
